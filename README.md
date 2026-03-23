@@ -22,7 +22,7 @@
 - `translate_enabled`: 是否启用翻译
 - `translate_target_language`: 翻译目标语言
 - `translate_provider_id`: 翻译使用的 provider（留空则跟随当前会话）
-- `detect_language_before_translate`: 翻译前语言识别
+- `detect_language_before_translate`: 翻译前语言识别（优先 Google 免 Key，失败回退 LLM）
 - `booth_locale`: BOOTH 接口语言区域
 - `request_timeout_sec`: 网络请求超时秒数
 

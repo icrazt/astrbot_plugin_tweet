@@ -418,6 +418,76 @@ class TweetPlugin(Star):
         provider_id: str,
         text: str,
     ) -> Optional[str]:
+        detected_by_google = await self._detect_language_by_google(text)
+        if detected_by_google:
+            logger.info(
+                f"tweet plugin: language detection API=GoogleFree detected={detected_by_google}",
+            )
+            return detected_by_google
+
+        logger.info("tweet plugin: language detection GoogleFree unavailable, fallback to LLM")
+        detected_by_llm = await self._detect_language_by_llm(provider_id, text)
+        if detected_by_llm:
+            logger.info(
+                f"tweet plugin: language detection API=LLM provider={provider_id} detected={detected_by_llm}",
+            )
+        return detected_by_llm
+
+    async def _detect_language_by_google(self, text: str) -> Optional[str]:
+        sample_text = text.strip()
+        if not sample_text:
+            return None
+
+        # 避免 URL 过长导致检测接口失败，截取前段原文用于判定语言
+        if len(sample_text) > 2000:
+            sample_text = sample_text[:2000]
+
+        api_url = "https://translate.googleapis.com/translate_a/single"
+        timeout = aiohttp.ClientTimeout(total=self._cfg_int("request_timeout_sec", 20))
+        headers = {"User-Agent": "astrbot-plugin-tweet/1.0.0"}
+        params = {
+            "client": "gtx",
+            "sl": "auto",
+            "tl": "en",
+            "dt": "t",
+            "q": sample_text,
+        }
+
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                async with session.get(api_url, params=params) as response:
+                    if response.status >= 400:
+                        logger.warning(
+                            f"tweet plugin: Google language detect HTTP {response.status}",
+                        )
+                        return None
+                    data = await response.json(content_type=None)
+        except Exception as exc:
+            logger.warning(f"tweet plugin: Google language detect failed: {exc}")
+            return None
+
+        detected_language = None
+        if isinstance(data, list) and len(data) >= 3 and isinstance(data[2], str):
+            detected_language = data[2].strip()
+
+        if not detected_language:
+            logger.warning("tweet plugin: Google language detect returned unexpected payload")
+            return None
+
+        code_match = re.search(
+            r"\b([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)\b",
+            detected_language,
+        )
+        if not code_match:
+            logger.warning("tweet plugin: Google language detect returned invalid language code")
+            return None
+        return code_match.group(1)
+
+    async def _detect_language_by_llm(
+        self,
+        provider_id: str,
+        text: str,
+    ) -> Optional[str]:
         try:
             llm_resp = await self.context.llm_generate(
                 chat_provider_id=provider_id,
@@ -428,7 +498,7 @@ class TweetPlugin(Star):
             )
             response_text = (llm_resp.completion_text or "").strip()
         except Exception as exc:
-            logger.warning(f"tweet plugin: language detection failed: {exc}")
+            logger.warning(f"tweet plugin: fallback LLM language detection failed: {exc}")
             return None
 
         code_match = re.search(
@@ -436,6 +506,7 @@ class TweetPlugin(Star):
             response_text,
         )
         if not code_match:
+            logger.warning("tweet plugin: fallback LLM language detection returned invalid language code")
             return None
         return code_match.group(1)
 

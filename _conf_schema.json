@@ -31,7 +31,7 @@
     "_special": "select_provider"
   },
   "detect_language_before_translate": {
-    "description": "翻译前先识别语言，若已是目标语言则跳过翻译。",
+    "description": "翻译前先识别语言（优先 Google 免 Key，失败回退 LLM），若已是目标语言则跳过翻译。",
     "type": "bool",
     "hint": "默认关闭，避免识别误判导致跳过翻译。",
     "default": false
