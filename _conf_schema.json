@@ -9,7 +9,7 @@
   "rsshub_query_param": {
     "description": "附加到 RSSHub 请求的查询参数。",
     "type": "string",
-    "hint": "例如 format=full 或 ?format=full",
+    "hint": "例如 RSSHub 的 ACCESS_KEY 或 ?format=full 等参数",
     "default": ""
   },
   "translate_enabled": {
