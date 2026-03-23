@@ -1,0 +1,51 @@
+{
+  "rsshub_base_url": {
+    "description": "RSSHub 的 Twitter/X 用户路由基础地址。",
+    "type": "string",
+    "hint": "例如：https://rsshub.app/twitter/user/",
+    "obvious_hint": true,
+    "default": "https://rsshub.app/twitter/user/"
+  },
+  "rsshub_query_param": {
+    "description": "附加到 RSSHub 请求的查询参数。",
+    "type": "string",
+    "hint": "例如 format=full 或 ?format=full",
+    "default": ""
+  },
+  "translate_enabled": {
+    "description": "是否启用推文自动翻译。",
+    "type": "bool",
+    "default": true
+  },
+  "translate_target_language": {
+    "description": "翻译目标语言代码。",
+    "type": "string",
+    "hint": "例如 zh-Hans、ja、en",
+    "default": "zh-Hans"
+  },
+  "translate_provider_id": {
+    "description": "用于翻译的聊天模型 Provider ID（可选）。",
+    "type": "string",
+    "hint": "留空时自动使用当前会话正在使用的聊天模型。",
+    "default": "",
+    "_special": "select_provider"
+  },
+  "detect_language_before_translate": {
+    "description": "翻译前先识别语言，若已是目标语言则跳过翻译。",
+    "type": "bool",
+    "hint": "默认关闭，避免识别误判导致跳过翻译。",
+    "default": false
+  },
+  "booth_locale": {
+    "description": "BOOTH 商品接口语言区域。",
+    "type": "string",
+    "options": ["zh-cn", "ja", "en"],
+    "default": "zh-cn"
+  },
+  "request_timeout_sec": {
+    "description": "网络请求超时秒数。",
+    "type": "int",
+    "hint": "用于 RSSHub、vxtwitter、BOOTH 拉取请求。",
+    "default": 20
+  }
+}
