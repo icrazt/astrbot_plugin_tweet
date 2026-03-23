@@ -5,6 +5,7 @@ import html
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 import aiohttp
@@ -120,15 +121,23 @@ class TweetPlugin(Star):
         else:
             chain = self._build_tweet_original(tweet_data, user_name)
 
-        for video_url in tweet_data.get("videos", []):
-            try:
-                chain.append(Comp.Video.fromURL(video_url))
-            except Exception as exc:
-                logger.warning(f"tweet plugin: 发送视频失败 {video_url} - {exc}")
-                chain.append(Comp.Plain(f"发送视频失败：{video_url}"))
+        video_urls = [
+            u for u in tweet_data.get("videos", [])
+            if self._is_valid_twitter_video_url(u)
+        ]
+        if video_urls:
+            asyncio.create_task(
+                self._send_videos_followup(
+                    umo=event.unified_msg_origin,
+                    video_urls=video_urls,
+                )
+            )
 
         if not chain:
-            chain = [Comp.Plain("该推文没有可发送的文本、图片或视频。")]
+            if video_urls:
+                chain = [Comp.Plain("检测到视频，正在发送视频消息...")]
+            else:
+                chain = [Comp.Plain("该推文没有可发送的文本、图片或视频。")]
 
         if command is None:
             source_text = str(tweet_data.get("text") or "").strip()
@@ -311,6 +320,19 @@ class TweetPlugin(Star):
         except Exception as exc:
             logger.warning(f"tweet plugin: 发送翻译消息失败: {exc}")
 
+    async def _send_videos_followup(self, umo: str, video_urls: list[str]) -> None:
+        for video_url in video_urls:
+            try:
+                ok = await self.context.send_message(
+                    umo,
+                    MessageChain(chain=[Comp.Video.fromURL(video_url)]),
+                )
+                if not ok:
+                    logger.warning(f"tweet plugin: 无法发送视频消息，找不到会话: {umo}")
+            except Exception as exc:
+                logger.warning(f"tweet plugin: 发送视频消息失败 {video_url} - {exc}")
+            await asyncio.sleep(0.8)
+
     async def _translate_text(
         self,
         umo: str,
@@ -454,8 +476,14 @@ class TweetPlugin(Star):
     ) -> tuple[str, list[str], list[str]]:
         content = html.unescape(content or "")
 
-        image_urls = self._dedup_urls(self.image_url_pattern.findall(content))
-        video_urls = self._dedup_urls(self.video_url_pattern.findall(content))
+        image_urls = [
+            u for u in self._dedup_urls(self.image_url_pattern.findall(content))
+            if self._is_valid_twitter_media_url(u)
+        ]
+        video_urls = [
+            u for u in self._dedup_urls(self.video_url_pattern.findall(content))
+            if self._is_valid_twitter_video_url(u)
+        ]
 
         cleaned = self.image_url_pattern.sub(" ", content)
         cleaned = self.video_url_pattern.sub(" ", cleaned)
@@ -513,6 +541,33 @@ class TweetPlugin(Star):
         if detected_norm.startswith("zh") and target_norm.startswith("zh"):
             return True
         return False
+
+    def _is_valid_twitter_media_url(self, url: str) -> bool:
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return False
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        if parsed.netloc.lower() != "pbs.twimg.com":
+            return False
+        file_name = parsed.path.rsplit("/", 1)[-1]
+        # 截断 URL（如 .../media/HEA）会导致 onebot rich media 上传失败
+        if len(file_name) < 6:
+            return False
+        # 大多数可用媒体链接会带 format 参数或显式扩展名
+        if "format=" not in parsed.query and "." not in file_name:
+            return False
+        return True
+
+    def _is_valid_twitter_video_url(self, url: str) -> bool:
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return False
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        return parsed.netloc.lower() == "video.twimg.com" and bool(parsed.path.strip("/"))
 
     def _dedup_urls(self, urls: list[str]) -> list[str]:
         result: list[str] = []
