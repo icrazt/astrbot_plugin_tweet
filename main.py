@@ -41,11 +41,11 @@ class TweetPlugin(Star):
             re.IGNORECASE,
         )
         self.image_url_pattern = re.compile(
-            r"https://pbs\.twimg\.com/(?:media|amplify_video_thumb|ext_tw_video_thumb)/[^\"'<>\\s]+",
+            r"https://pbs\.twimg\.com/(?:media|amplify_video_thumb|ext_tw_video_thumb)/[^\"'<>\s]+",
             re.IGNORECASE,
         )
         self.video_url_pattern = re.compile(
-            r"https://video\.twimg\.com/[^\"'<>\\s]+",
+            r"https://video\.twimg\.com/[^\"'<>\s]+",
             re.IGNORECASE,
         )
 
