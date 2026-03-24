@@ -347,22 +347,16 @@ class TweetPlugin(Star):
         if not target_language:
             return None
 
-        provider_id = self._cfg_str("translate_provider_id", "")
-        if not provider_id:
-            try:
-                provider_id = await self.context.get_current_chat_provider_id(umo=umo)
-            except Exception as exc:
-                logger.warning(
-                    f"tweet plugin: failed to resolve chat provider for translation: {exc}",
-                )
-                return None
+        provider_ids = await self._resolve_translation_provider_ids(umo=umo)
+        if not provider_ids:
+            return None
 
         raw_text = text.strip()
         if not raw_text:
             return None
 
         if self._cfg_bool("detect_language_before_translate", False):
-            detected_language = await self._detect_language(provider_id, raw_text)
+            detected_language = await self._detect_language(provider_ids, raw_text)
             if detected_language and self._language_matches_target(
                 detected_language,
                 target_language,
@@ -370,7 +364,7 @@ class TweetPlugin(Star):
                 return None
 
         translated_text = await self._request_translation(
-            provider_id=provider_id,
+            provider_ids=provider_ids,
             target_language=target_language,
             text=raw_text,
             system_prompt="你是翻译助手。只输出翻译结果，不要解释。",
@@ -378,7 +372,7 @@ class TweetPlugin(Star):
 
         if not translated_text or translated_text == raw_text:
             translated_text = await self._request_translation(
-                provider_id=provider_id,
+                provider_ids=provider_ids,
                 target_language=target_language,
                 text=raw_text,
                 system_prompt="Translate the given text and output translation only.",
@@ -391,7 +385,7 @@ class TweetPlugin(Star):
 
     async def _request_translation(
         self,
-        provider_id: str,
+        provider_ids: list[str],
         target_language: str,
         text: str,
         system_prompt: str,
@@ -401,21 +395,16 @@ class TweetPlugin(Star):
             "仅输出翻译结果，不要解释：\n\n"
             f"{text}"
         )
-        try:
-            llm_resp = await self.context.llm_generate(
-                chat_provider_id=provider_id,
-                system_prompt=system_prompt,
-                prompt=prompt,
-            )
-            translated_text = (llm_resp.completion_text or "").strip()
-            return translated_text or None
-        except Exception as exc:
-            logger.warning(f"tweet plugin: translation request failed: {exc}")
-            return None
+        return await self._generate_with_fallback(
+            provider_ids=provider_ids,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            purpose="translation",
+        )
 
     async def _detect_language(
         self,
-        provider_id: str,
+        provider_ids: list[str],
         text: str,
     ) -> Optional[str]:
         detected_by_google = await self._detect_language_by_google(text)
@@ -426,10 +415,10 @@ class TweetPlugin(Star):
             return detected_by_google
 
         logger.info("tweet plugin: language detection GoogleFree unavailable, fallback to LLM")
-        detected_by_llm = await self._detect_language_by_llm(provider_id, text)
+        detected_by_llm = await self._detect_language_by_llm(provider_ids, text)
         if detected_by_llm:
             logger.info(
-                f"tweet plugin: language detection API=LLM provider={provider_id} detected={detected_by_llm}",
+                f"tweet plugin: language detection API=LLM providers={provider_ids} detected={detected_by_llm}",
             )
         return detected_by_llm
 
@@ -485,20 +474,16 @@ class TweetPlugin(Star):
 
     async def _detect_language_by_llm(
         self,
-        provider_id: str,
+        provider_ids: list[str],
         text: str,
     ) -> Optional[str]:
-        try:
-            llm_resp = await self.context.llm_generate(
-                chat_provider_id=provider_id,
-                system_prompt=(
-                    "你是语言识别助手。只返回语言代码，如 en、zh-Hans、ja。"
-                ),
-                prompt=text,
-            )
-            response_text = (llm_resp.completion_text or "").strip()
-        except Exception as exc:
-            logger.warning(f"tweet plugin: fallback LLM language detection failed: {exc}")
+        response_text = await self._generate_with_fallback(
+            provider_ids=provider_ids,
+            system_prompt="你是语言识别助手。只返回语言代码，如 en、zh-Hans、ja。",
+            prompt=text,
+            purpose="language detection",
+        )
+        if not response_text:
             return None
 
         code_match = re.search(
@@ -509,6 +494,143 @@ class TweetPlugin(Star):
             logger.warning("tweet plugin: fallback LLM language detection returned invalid language code")
             return None
         return code_match.group(1)
+
+    async def _resolve_translation_provider_ids(self, umo: str) -> list[str]:
+        provider_ids: list[str] = []
+        provider_id = self._cfg_str("translate_provider_id", "")
+        using_current_chat_provider = False
+        fallback_source = "plugin_config"
+
+        if not provider_id:
+            using_current_chat_provider = True
+            try:
+                provider_id = await self.context.get_current_chat_provider_id(umo=umo)
+            except Exception as exc:
+                logger.warning(
+                    f"tweet plugin: failed to resolve chat provider for translation: {exc}",
+                )
+                return []
+
+        if provider_id:
+            provider_ids.append(provider_id)
+
+        fallback_ids = self._cfg_list("translate_fallback_provider_ids")
+        if not fallback_ids and using_current_chat_provider:
+            fallback_ids = self._get_session_fallback_provider_ids(umo)
+            fallback_source = "session_fallback_chat_models"
+        elif not fallback_ids:
+            fallback_source = "none"
+
+        for fallback_id in fallback_ids:
+            if fallback_id and fallback_id not in provider_ids:
+                provider_ids.append(fallback_id)
+
+        logger.info(
+            "tweet plugin: translation providers resolved primary=%s fallback_source=%s fallback_count=%d providers=%s",
+            provider_id,
+            fallback_source,
+            max(len(provider_ids) - 1, 0),
+            provider_ids,
+        )
+        return provider_ids
+
+    def _get_session_fallback_provider_ids(self, umo: str) -> list[str]:
+        try:
+            provider_manager = getattr(self.context, "provider_manager", None)
+            acm = getattr(provider_manager, "acm", None)
+            if not acm:
+                return []
+            conf = acm.get_conf(umo)
+            if not isinstance(conf, dict):
+                return []
+            provider_settings = conf.get("provider_settings", {})
+            if not isinstance(provider_settings, dict):
+                return []
+            fallback_ids = provider_settings.get("fallback_chat_models", [])
+            if not isinstance(fallback_ids, list):
+                return []
+            return [
+                str(fallback_id).strip()
+                for fallback_id in fallback_ids
+                if str(fallback_id).strip()
+            ]
+        except Exception as exc:
+            logger.warning(
+                f"tweet plugin: failed to resolve session fallback chat models: {exc}",
+            )
+            return []
+
+    async def _generate_with_fallback(
+        self,
+        *,
+        provider_ids: list[str],
+        system_prompt: str,
+        prompt: str,
+        purpose: str,
+    ) -> Optional[str]:
+        total = len(provider_ids)
+        logger.info(
+            "tweet plugin: starting %s request with %d provider(s): %s",
+            purpose,
+            total,
+            provider_ids,
+        )
+        for index, provider_id in enumerate(provider_ids):
+            logger.info(
+                "tweet plugin: trying %s provider %s (%d/%d)",
+                purpose,
+                provider_id,
+                index + 1,
+                total,
+            )
+            try:
+                llm_resp = await self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    system_prompt=system_prompt,
+                    prompt=prompt,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"tweet plugin: {purpose} request failed with provider {provider_id} ({index + 1}/{total}): {exc}",
+                )
+                continue
+
+            if llm_resp.role == "err":
+                logger.warning(
+                    "tweet plugin: %s provider %s (%d/%d) returned error response%s",
+                    purpose,
+                    provider_id,
+                    index + 1,
+                    total,
+                    ", trying fallback" if index < total - 1 else "",
+                )
+                continue
+
+            content = (llm_resp.completion_text or "").strip()
+            if content:
+                logger.info(
+                    "tweet plugin: %s succeeded with provider %s (%d/%d)",
+                    purpose,
+                    provider_id,
+                    index + 1,
+                    total,
+                )
+                return content
+
+            logger.warning(
+                "tweet plugin: %s provider %s (%d/%d) returned empty response%s",
+                purpose,
+                provider_id,
+                index + 1,
+                total,
+                ", trying fallback" if index < total - 1 else "",
+            )
+        logger.warning(
+            "tweet plugin: all providers failed for %s: %s",
+            purpose,
+            provider_ids,
+        )
+        return None
 
     def _build_tweet_original(
         self,
@@ -676,3 +798,18 @@ class TweetPlugin(Star):
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "y", "on"}
         return bool(value)
+
+    def _cfg_list(self, key: str) -> list[str]:
+        value = self.config.get(key, [])
+        if isinstance(value, str):
+            items = re.split(r"[\n,]", value)
+        elif isinstance(value, (list, tuple, set)):
+            items = list(value)
+        else:
+            return []
+        result: list[str] = []
+        for item in items:
+            normalized = str(item).strip()
+            if normalized:
+                result.append(normalized)
+        return result

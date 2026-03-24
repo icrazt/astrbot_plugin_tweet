@@ -22,6 +22,7 @@
 - `translate_enabled`: 是否启用翻译
 - `translate_target_language`: 翻译目标语言
 - `translate_provider_id`: 翻译使用的 provider（留空则跟随当前会话）
+- `translate_fallback_provider_ids`: 翻译失败时按顺序重试的 provider 列表
 - `detect_language_before_translate`: 翻译前语言识别（优先 Google 免 Key，失败回退 LLM）
 - `booth_locale`: BOOTH 接口语言区域
 - `request_timeout_sec`: 网络请求超时秒数
@@ -29,3 +30,5 @@
 ## 说明
 - 翻译调用使用 AstrBot 的 `context.llm_generate()` 内置接口实现。
 - 当 `translate_provider_id` 为空时，会自动使用当前会话的聊天模型。
+- 当 `translate_fallback_provider_ids` 为空且 `translate_provider_id` 也为空时，会自动继承当前会话配置中的 `provider_settings.fallback_chat_models`。
+- 当主翻译模型请求异常、返回错误响应，或返回空文本时，插件会按 fallback 顺序继续重试。

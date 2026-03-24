@@ -30,6 +30,16 @@
     "default": "",
     "_special": "select_provider"
   },
+  "translate_fallback_provider_ids": {
+    "description": "翻译失败时按顺序重试的聊天模型 Provider ID 列表（可选）。",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "hint": "留空时，如果 translate_provider_id 也留空，则自动继承当前会话的 provider_settings.fallback_chat_models。",
+    "default": [],
+    "_special": "select_providers"
+  },
   "detect_language_before_translate": {
     "description": "翻译前先识别语言（优先 Google 免 Key，失败回退 LLM），若已是目标语言则跳过翻译。",
     "type": "bool",
