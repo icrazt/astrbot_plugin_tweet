@@ -60,21 +60,27 @@ class TweetPlugin(Star):
         if tweet_info is not None:
             tweet_results, translate_text = tweet_info
             event.should_call_llm(False)
-            for result in tweet_results:
-                result.stop_event()
-                yield result
-            if translate_text:
+
+            if not translate_text:
+                for result in tweet_results:
+                    result.stop_event()
+                    yield result
+            else:
+                umo = event.unified_msg_origin
+                # 并发：立即启动翻译请求，同时发送原文
+                translate_task = asyncio.create_task(
+                    self._translate_text(umo=umo, text=translate_text)
+                )
+                for result in tweet_results:
+                    await self.context.send_message(umo, result)
+                # 原文已发送，等待翻译完成后发送
                 try:
-                    translated = await self._translate_text(
-                        umo=event.unified_msg_origin,
-                        text=translate_text,
-                    )
+                    translated = await translate_task
                     if translated:
-                        translation_result = event.plain_result(translated)
-                        translation_result.stop_event()
-                        yield translation_result
+                        await self.context.send_message(umo, MessageChain().message(translated))
                 except Exception as exc:
                     logger.warning(f"tweet plugin: 翻译失败: {exc}")
+                event.stop_event()
             return
 
         booth_results = await self._handle_booth_link(event, text)
