@@ -27,6 +27,7 @@ class TweetPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
+        self._background_tasks: set[asyncio.Task] = set()
 
         self.twitter_link_pattern = re.compile(
             r"https?://(?:x\.com|twitter\.com)/([A-Za-z0-9_]+)/status/(\d+)",
@@ -55,12 +56,25 @@ class TweetPlugin(Star):
         if not text:
             return
 
-        tweet_results = await self._handle_tweet_link(event, text)
-        if tweet_results is not None:
+        tweet_info = await self._handle_tweet_link(event, text)
+        if tweet_info is not None:
+            tweet_results, translate_text = tweet_info
             event.should_call_llm(False)
             for result in tweet_results:
                 result.stop_event()
                 yield result
+            if translate_text:
+                try:
+                    translated = await self._translate_text(
+                        umo=event.unified_msg_origin,
+                        text=translate_text,
+                    )
+                    if translated:
+                        translation_result = event.plain_result(translated)
+                        translation_result.stop_event()
+                        yield translation_result
+                except Exception as exc:
+                    logger.warning(f"tweet plugin: 翻译失败: {exc}")
             return
 
         booth_results = await self._handle_booth_link(event, text)
@@ -74,7 +88,7 @@ class TweetPlugin(Star):
         self,
         event: AstrMessageEvent,
         text: str,
-    ) -> Optional[list[MessageEventResult]]:
+    ) -> Optional[tuple[list[MessageEventResult], Optional[str]]]:
         command: Optional[str] = None
         content = text
         lowered = text.lower()
@@ -97,7 +111,7 @@ class TweetPlugin(Star):
         if user_name.lower() == "i":
             resolved = await self._resolve_twitter_link(tweet_id)
             if not resolved:
-                return [event.plain_result("未能解析推文链接。")]
+                return ([event.plain_result("未能解析推文链接。")], None)
             user_name, original_link = resolved
 
         rsshub_base_url = self._cfg_str(
@@ -105,7 +119,7 @@ class TweetPlugin(Star):
             "https://rsshub.app/twitter/user/",
         )
         if not rsshub_base_url:
-            return [event.plain_result("插件尚未配置 RSSHub 地址，请联系管理员。")]
+            return ([event.plain_result("插件尚未配置 RSSHub 地址，请联系管理员。")], None)
 
         query = self._cfg_str("rsshub_query_param", "")
         if query and not query.startswith("?"):
@@ -114,7 +128,7 @@ class TweetPlugin(Star):
 
         tweet_data = await self._fetch_tweet_data(rss_url, original_link)
         if not tweet_data:
-            return [event.plain_result("未能获取该推文。")]
+            return ([event.plain_result("未能获取该推文。")], None)
 
         if command == "content":
             chain = self._build_tweet_content_only(tweet_data)
@@ -126,12 +140,14 @@ class TweetPlugin(Star):
             if self._is_valid_twitter_video_url(u)
         ]
         if video_urls:
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._send_videos_followup(
                     umo=event.unified_msg_origin,
                     video_urls=video_urls,
                 )
             )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
         if not chain:
             if video_urls:
@@ -139,17 +155,13 @@ class TweetPlugin(Star):
             else:
                 chain = [Comp.Plain("该推文没有可发送的文本、图片或视频。")]
 
+        translate_text = None
         if command is None:
             source_text = str(tweet_data.get("text") or "").strip()
             if source_text:
-                asyncio.create_task(
-                    self._send_translation_followup(
-                        umo=event.unified_msg_origin,
-                        source_text=source_text,
-                    )
-                )
+                translate_text = source_text
 
-        return [event.chain_result(chain)]
+        return ([event.chain_result(chain)], translate_text)
 
     async def _handle_booth_link(
         self,
@@ -309,16 +321,6 @@ class TweetPlugin(Star):
         if isinstance(data, dict):
             return data
         return None
-
-    async def _send_translation_followup(self, umo: str, source_text: str) -> None:
-        try:
-            translated_text = await self._translate_text(umo=umo, text=source_text)
-            if not translated_text:
-                return
-            message_chain = MessageChain().message(translated_text)
-            await self.context.send_message(umo, message_chain)
-        except Exception as exc:
-            logger.warning(f"tweet plugin: 发送翻译消息失败: {exc}")
 
     async def _send_videos_followup(self, umo: str, video_urls: list[str]) -> None:
         for video_url in video_urls:
